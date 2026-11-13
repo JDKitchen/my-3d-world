@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My 3D Mini World Explorer</title>
+    <style>
+        /* Reset default margins and padding */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #11141a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none; /* Prevent accidental text highlighting during click-and-drag */
+        }
+
+        /* Fullscreen canvas container */
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Glassmorphism style UI overlay */
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #ffffff;
+            background: rgba(17, 20, 26, 0.85);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            pointer-events: none; /* Mouse actions bypass HUD directly to the 3D scene */
+            max-width: 340px;
+        }
+
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 1.25rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        p {
+            margin: 0;
+            font-size: 0.85rem;
+            color: #a0aec0;
+            line-height: 1.5;
+        }
+
+        .highlight {
+            color: #4fd1c5;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- HUD Overlay for User Instructions -->
+    <div id="ui-overlay">
+        <h1>🌐 Mini World Explorer</h1>
+        <p>Left-click and drag to <span class="highlight">rotate</span>.<br>
+           Right-click and drag to <span class="highlight">pan</span>.<br>
+           Scroll to zoom. Viewing range restricted to <span class="highlight">5 to 10 feet</span>.</p>
+    </div>
+
+    <!-- Canvas target element -->
+    <div id="canvas-container"></div>
+
+    <!-- 1. The Import Map (Tells the browser where to find Three.js modules) -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <!-- 2. Your entire Three.js application script -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        let scene, camera, renderer, controls, loadedModel;
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            // --- SCENE & ATMOSPHERE SETUP ---
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color('#11141a'); // Default background while skybox is loading
+            
+            // Soft atmosphere fog
+            scene.fog = new THREE.FogExp2('#11141a', 0.05);
+
+            // --- CAMERA SETUP ---
+            // PerspectiveCamera maps perfectly to human eye depth perception
+            const fov = 45;
+            const aspect = window.innerWidth / window.innerHeight;
+            const near = 0.1;
+            const far = 100;
+            camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+            // Starting position comfortably between your 5-10 feet range
+            camera.position.set(0, 3, 8); 
+
+            // --- WEBGL RENDERER SETUP ---
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Lock performance for retina/high-res displays
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Beautiful soft shadows
+            container.appendChild(renderer.domElement);
+
+            // --- INTERACTION & ORBIT CONTROLS ---
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Adds a realistic physical weight / smooth glide feeling
+            controls.dampingFactor = 0.05;
+            
+            // STRICTLY ENFORCED LIMITS (Mapping your 5-10 feet requirement to units)
+            controls.minDistance = 5.0; // Stop user from scrolling closer than 5 units
+            controls.maxDistance = 10.0; // Stop user from scrolling further than 10 units
+            
+            // Constrain viewing angles
+            controls.minPolarAngle = 0.1; // Stop directly overhead to prevent perspective flipping
+            controls.maxPolarAngle = Math.PI / 2 - 0.05; // Lock camera from passing below ground level
+
+            // --- PHYSICAL ENVIRONMENT LIGHTING ---
+            const ambientLight = new THREE.AmbientLight('#ffffff', 0.4);
+            scene.add(ambientLight);
+
+            // Strong primary daylight casting shadows
+            const keyLight = new THREE.DirectionalLight('#fffaed', 1.2);
+            keyLight.position.set(5, 10, 4);
+            keyLight.castShadow = true;
+            keyLight.shadow.mapSize.width = 2048; // High-res shadow texture
+            keyLight.shadow.mapSize.height = 2048;
+            keyLight.shadow.bias = -0.0001; // Avoid shadow-acne graphic artifacts
+            scene.add(keyLight);
+
+            // Soft cool fill light from the opposite direction so shadows aren't pitch black
+            const fillLight = new THREE.DirectionalLight('#8eb3f5', 0.4);
+            fillLight.position.set(-5, 4, -4);
+            scene.add(fillLight);
+
+            // --- ACTIVE SKYBOX TEXTURE LOADER ---
+            const textureLoader = new THREE.TextureLoader();
+            textureLoader.load('assets/skybox.jpg', (texture) => {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+                scene.background = texture;
+                scene.environment = texture; // Automatically applies environmental reflection to our 3D models!
+            }, undefined, (error) => {
+                console.warn('Could not load skybox.jpg from your assets/ folder. Make sure your local server is running.');
+            });
+
+            // --- GROUND DIORAMA PLATFORM ---
+            const platformGeo = new THREE.CylinderGeometry(3, 3, 0.2, 64);
+            const platformMat = new THREE.MeshStandardMaterial({ 
+                color: '#242b35', 
+                roughness: 0.8,
+                metalness: 0.2 
+            });
+            const platform = new THREE.Mesh(platformGeo, platformMat);
+            platform.position.y = -0.1; // Lowered slightly so top of platform sits at Y=0
+            platform.receiveShadow = true;
+            scene.add(platform);
+
+            // Grid Helper to give a concrete sense of space & perspective
+            const gridHelper = new THREE.GridHelper(10, 10, '#4fd1c5', '#323d4c');
+            gridHelper.position.y = 0.01; // Tiny offset to prevent Z-fighting artifacts with the platform
+            scene.add(gridHelper);
+
+            // --- ACTIVE GLB 3D MODEL LOADER ---
+            const gltfLoader = new GLTFLoader();
+            gltfLoader.load('assets/model.glb', (gltf) => {
+                const model = gltf.scene;
+
+                // 1. Traverse meshes to configure shadow physics
+                model.traverse((node) => {
+                    if (node.isMesh) {
+                        node.castShadow = true;
+                        node.receiveShadow = true;
+                        if (node.material) {
+                            node.material.depthWrite = true;
+                        }
+                    }
+                });
+
+                // 2. Automatically scale the model to fit our cylinder platform (normalizes size differences)
+                const box = new THREE.Box3().setFromObject(model);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const targetScale = 2.0 / maxDim; // Play with this scaling factor as needed
+                model.scale.setScalar(targetScale);
+
+                // 3. Center the model exactly on top of our cylinder platform
+                const center = box.getCenter(new THREE.Vector3());
+                model.position.x = -center.x * targetScale;
+                model.position.y = (-center.y * targetScale) + (size.y * targetScale / 2);
+                model.position.z = -center.z * targetScale;
+
+                // 4. Cache model reference globally for the animate/spin loop
+                loadedModel = model;
+
+                // 5. Place it on the stage!
+                scene.add(model);
+                console.log('Model loaded successfully!');
+
+            }, (xhr) => {
+                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+            }, (error) => {
+                console.warn('Could not load assets/model.glb. Showing temporary box instead.');
+                createPlaceholderCube();
+            });
+
+            // --- EVENTS ---
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // --- FALLBACK PLACEHOLDER ---
+        // Renders only if your GLB file path is invalid or missing
+        function createPlaceholderCube() {
+            const geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+            const material = new THREE.MeshStandardMaterial({ 
+                color: '#4fd1c5',
+                roughness: 0.4,
+                metalness: 0.1
+            });
+            loadedModel = new THREE.Mesh(geometry, material);
+            loadedModel.position.y = 0.76; // Center on top of platform
+            loadedModel.castShadow = true;
+            loadedModel.receiveShadow = true;
+            scene.add(loadedModel);
+        }
+
+        // Handle window resizing seamlessly
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // The Animation/Render Loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Gently spin whichever 3D object is currently on stage
+            if (loadedModel) {
+                loadedModel.rotation.y += 0.005;
+            }
+
+            // Update OrbitControls with damping physics
+            controls.update();
+
+            // Paint the updated frame
+            renderer.render(scene, camera);
+        }
+
+        // Fire off initialization and animation
+        init();
+        animate();
+    </script>
+</body>
+</html>
